@@ -737,7 +737,7 @@ BarWidget {
             id: titleText
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: "Snowball"
+            text: "Snowball Robo Trader"
             color: Color.popups.text
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.subtitle
@@ -824,7 +824,7 @@ BarWidget {
               text: root.dollars(root.portfolioValue(-1), false)
               color: Color.popups.text
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
-              font.pixelSize: Style.font.subtitle
+              font.pixelSize: Style.font.subtitle * 2
               font.bold: true
               renderType: Text.NativeRendering
             }
