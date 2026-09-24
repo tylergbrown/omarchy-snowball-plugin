@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "id": "tb.snowball",
+  "name": "Omarchy Snowball Plugin",
+  "version": "1.3.1",
+  "author": "tb",
+  "description": "Omarchy bar widget for the Snowball auto trader: live Coinbase balances over SSH, health, portfolio chart, and docker restart.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "Snowball",
+    "description": "Omarchy Snowball Plugin \u2014 live trader status on the bar.",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "left",
+    "defaults": {
+      "url": "http://192.168.1.24:8080",
+      "pollSec": 10,
+      "snapshotSec": 120,
+      "staleTickSec": 300,
+      "showPnl": true,
+      "sshUser": "tylerbrown",
+      "container": "snowball"
+    },
+    "schema": [
+      {
+        "key": "url",
+        "type": "string",
+        "label": "Status URL",
+        "description": "Snowball dashboard origin, without a trailing path.",
+        "defaultValue": "http://192.168.1.24:8080"
+      },
+      {
+        "key": "pollSec",
+        "type": "integer",
+        "label": "Health check (seconds)",
+        "description": "How often the bar asks /health. This is the cheap check.",
+        "min": 5,
+        "max": 300,
+        "step": 5,
+        "defaultValue": 10
+      },
+      {
+        "key": "snapshotSec",
+        "type": "integer",
+        "label": "Detail check (seconds)",
+        "description": "How often the bar refreshes live Coinbase balances over SSH (plus a short optional /api/snapshot flag poll). 0 skips detail. The Coinbase read can take up to about a minute.",
+        "min": 0,
+        "max": 3600,
+        "step": 10,
+        "defaultValue": 120
+      },
+      {
+        "key": "staleTickSec",
+        "type": "integer",
+        "label": "Stale tick (seconds)",
+        "description": "Warn when the last trading tick is older than this.",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 300
+      },
+      {
+        "key": "showPnl",
+        "type": "boolean",
+        "label": "Show day PnL in the bar",
+        "defaultValue": true
+      },
+      {
+        "key": "sshUser",
+        "type": "string",
+        "label": "Restart SSH user",
+        "description": "Account on the trader host used by the restart button.",
+        "defaultValue": "tylerbrown"
+      },
+      {
+        "key": "container",
+        "type": "string",
+        "label": "Container",
+        "description": "Docker container the restart button restarts.",
+        "defaultValue": "snowball"
+      }
+    ]
+  }
+}
