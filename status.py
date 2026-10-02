@@ -528,7 +528,7 @@ def health(base: str) -> dict:
 
 
 def ssh_key() -> str:
-    for path in ("/home/tb/.ssh/id_ed25519", "/home/tyler/.ssh/id_ed25519"):
+    for path in (os.path.expanduser("~/.ssh/id_ed25519"),):
         try:
             with open(path, "rb"):
                 return path

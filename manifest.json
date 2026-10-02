@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "tb.snowball",
   "name": "Omarchy Snowball Plugin",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "author": "tb",
-  "description": "Snowball auto trader bar chip: Coinbase via SSH; portfolio value at 2\u00d7 type; titled Snowball Robo Trader (v1.3.2).",
+  "description": "Snowball auto trader bar chip: Coinbase via SSH; portfolio value at 2\u00d7 type; titled Snowball Robo Trader (v1.3.3).",
   "kinds": [
     "bar-widget"
   ],
