@@ -4,7 +4,9 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Status chip for the Snowball auto trader. One /api/snapshot carries every
+// Status chip for the Snowball auto trader. Popup styled after the Otter
+// Robo Trader (warm dark cards, orange accents, status chips, 26px hero).
+// One /api/snapshot carries every
 // book's equity; that read often takes about twenty seconds, so the poll waits.
 BarWidget {
   id: root
@@ -59,6 +61,195 @@ BarWidget {
   readonly property string facts: buildFacts()
   readonly property bool opened: popupOpen
 
+  // ── Otter Robo Trader palette (warm dark + orange) ───────────────────
+  readonly property color cBg: "#0C0B0A"
+  readonly property color cSurface: "#15110E"
+  readonly property color cSurfaceAlt: "#211813"
+  readonly property color cFg: "#F2E8DE"
+  readonly property color cMuted: "#B9A79A"
+  readonly property color cAccent: "#FF8A1F"
+  readonly property color cSelected: "#3D220A"
+  readonly property color cBorder: "#C45C12"
+  readonly property color cOk: "#4ADE80"
+  readonly property color cWarn: "#FBBF24"
+  readonly property color cBad: "#FF6B6B"
+  readonly property string monoFont: "JetBrainsMono Nerd Font"
+
+  readonly property var spotColumns: [
+    { key: "product", title: "Product", align: "left", w: 110 },
+    { key: "side", title: "Side", align: "left", w: 56 },
+    { key: "qty", title: "Qty", align: "right", w: 88 },
+    { key: "entry", title: "Entry", align: "right", w: 78 },
+    { key: "mark", title: "Mark", align: "right", w: 78 },
+    { key: "value", title: "Value", align: "right", w: 78 },
+    { key: "pnl_pct", title: "P/L %", align: "right", w: 64 },
+    { key: "pnl_usd", title: "P/L $", align: "right", w: 78 },
+    { key: "strategy", title: "Strategy", align: "left", w: 90 }
+  ]
+  readonly property var cashColumns: [
+    { key: "product", title: "Asset", align: "left", w: 120 },
+    { key: "side", title: "Type", align: "left", w: 56 },
+    { key: "qty", title: "Qty", align: "right", w: 100 },
+    { key: "value", title: "Value", align: "right", w: 90 }
+  ]
+  readonly property var futuresColumns: [
+    { key: "product", title: "Product", align: "left", w: 120 },
+    { key: "side", title: "Side", align: "left", w: 56 },
+    { key: "qty", title: "Contracts", align: "right", w: 80 },
+    { key: "entry", title: "Entry", align: "right", w: 78 },
+    { key: "mark", title: "Mark", align: "right", w: 78 },
+    { key: "value", title: "Notional", align: "right", w: 78 },
+    { key: "pnl_pct", title: "P/L %", align: "right", w: 64 },
+    { key: "pnl_usd", title: "P/L $", align: "right", w: 78 }
+  ]
+  readonly property var treasuryColumns: [
+    { key: "product", title: "Asset", align: "left", w: 90 },
+    { key: "qty", title: "Holdings", align: "right", w: 100 },
+    { key: "entry", title: "Avg cost", align: "right", w: 90 },
+    { key: "mark", title: "Spot", align: "right", w: 90 },
+    { key: "value", title: "Mark value", align: "right", w: 90 },
+    { key: "pnl_pct", title: "P/L %", align: "right", w: 64 },
+    { key: "pnl_usd", title: "P/L $", align: "right", w: 78 },
+    { key: "strategy", title: "Kind", align: "left", w: 80 }
+  ]
+  readonly property var bookOrder: ["cash", "treasury", "futures", "coinbase", "crypto", "stocks", "crash", "fed"]
+
+  readonly property var statusChips: computeStatusChips()
+  readonly property string popupSubtitle: wittySubtitle()
+  readonly property var flagList: computeFlags()
+  readonly property real dayPnl: hasDetail && detail.daily_pnl_usd !== undefined && detail.daily_pnl_usd !== null
+    ? Number(detail.daily_pnl_usd) : NaN
+
+  function toneColor(tone) {
+    if (tone === "ok") return cOk
+    if (tone === "warn") return cWarn
+    if (tone === "bad") return cBad
+    if (tone === "accent") return cAccent
+    return cFg
+  }
+
+  function toneFor(value) {
+    if (value === undefined || value === null || value === "") return ""
+    var amount = Number(value)
+    if (!isFinite(amount) || amount === 0) return ""
+    return amount > 0 ? "ok" : "bad"
+  }
+
+  function computeStatusChips() {
+    var chips = []
+    if (restartBusy) chips.push({ label: "RESTARTING", tone: "warn" })
+    if (sawHealth) {
+      if (health.reachable === true && health.ok !== false) chips.push({ label: "REACHABLE", tone: "ok" })
+      else if (health.reachable !== true) chips.push({ label: "DOWN", tone: "bad" })
+      if (health.ok === false) chips.push({ label: "FAULT", tone: "bad" })
+    }
+    if (mode) chips.push({ label: mode.toUpperCase(), tone: "accent" })
+    if (halted) chips.push({ label: "HALT", tone: "bad" })
+    if (killed) chips.push({ label: "KILL", tone: "bad" })
+    if (paper && mode !== "paper") chips.push({ label: "PAPER", tone: "warn" })
+    if (tickStale) chips.push({ label: "STALE TICK", tone: "warn" })
+    if (chips.length === 0) chips.push({ label: "PENDING", tone: "warn" })
+    return chips
+  }
+
+  function wittySubtitle() {
+    if (restartBusy) return "restarting the container…"
+    if (restartMessage) return restartMessage
+    if (halted) return "halted — sitting this one out"
+    if (killed) return "daily kill tripped — cool-off mode"
+    if (sawHealth && health.ok === false) return "fault lights on — check FLAGS"
+    if (sawHealth && health.reachable !== true) return "robo trader is AFK"
+    if (isFinite(dayPnl) && dayPnl > 0) return "snowballing — day is green"
+    if (isFinite(dayPnl) && dayPnl < 0) return "red day — still compounding"
+    if (hasDetail && detail.equity_usd !== undefined && detail.equity_usd !== null) return "books open · chips stacked"
+    if (reachable) return snapBusy ? "reachable · reading balances…" : "reachable · waiting on snapshot"
+    return "warming up the bots…"
+  }
+
+  function computeFlags() {
+    var out = []
+    if (!hasDetail) return out
+    var reasons = detail.block_reasons || []
+    for (var i = 0; i < reasons.length; i++) out.push(String(reasons[i]))
+    if (detail.last_error) out.push("err: " + String(detail.last_error))
+    return out.slice(0, 8)
+  }
+
+  function tablePrice(value) {
+    if (value === undefined || value === null || value === "") return "—"
+    var amount = Number(value)
+    if (!isFinite(amount)) return "—"
+    var abs = Math.abs(amount)
+    if (abs >= 1000) return amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+    if (abs >= 1) return amount.toFixed(4).replace(/\.?0+$/, "")
+    return amount.toFixed(8).replace(/\.?0+$/, "") || "0"
+  }
+
+  function tableQty(value) {
+    if (value === undefined || value === null || value === "") return "—"
+    var amount = Number(value)
+    if (!isFinite(amount)) return "—"
+    var abs = Math.abs(amount)
+    if (abs >= 1000000) return Math.round(amount).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+    if (abs >= 100) return amount.toFixed(2).replace(/\.?0+$/, "").replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+    return amount.toFixed(8).replace(/\.?0+$/, "") || "0"
+  }
+
+  function tablePct(value) {
+    if (value === undefined || value === null || value === "") return "—"
+    var amount = Number(value)
+    if (!isFinite(amount)) return "—"
+    return (amount > 0 ? "+" : "") + amount.toFixed(2) + "%"
+  }
+
+  function maybeDollars(value, signed) {
+    if (value === undefined || value === null || value === "") return "—"
+    return dollars(value, signed)
+  }
+
+  function cellFor(pos, key) {
+    if (key === "product") return { text: String(pos.product || "—"), color: cFg }
+    if (key === "side") return { text: String(pos.side || "—"), color: cFg }
+    if (key === "qty") return { text: tableQty(pos.qty), color: cFg }
+    if (key === "entry") return { text: tablePrice(pos.entry_price), color: cFg }
+    if (key === "mark") return { text: tablePrice(pos.mark), color: cFg }
+    if (key === "value") return { text: maybeDollars(pos.value_usd, false), color: cFg }
+    if (key === "pnl_pct") return { text: tablePct(pos.pnl_pct), color: toneColor(toneFor(pos.pnl_pct)) }
+    if (key === "pnl_usd") return { text: maybeDollars(pos.unrealized_pnl, true), color: toneColor(toneFor(pos.unrealized_pnl)) }
+    if (key === "strategy") return { text: String(pos.strategy || "—"), color: cFg }
+    return { text: "—", color: cFg }
+  }
+
+  function columnsFor(name) {
+    if (name === "treasury") return treasuryColumns
+    if (name === "cash") return cashColumns
+    if (name === "futures") return futuresColumns
+    return spotColumns
+  }
+
+  function columnWidth(columns, index, total) {
+    var sum = 0
+    for (var i = 0; i < columns.length; i++) sum += columns[i].w
+    var usable = Math.max(1, total - 10 * (columns.length - 1))
+    return Math.floor(usable * columns[index].w / Math.max(1, sum))
+  }
+
+  function spotNotional(pos) {
+    var keys = ["value_usd", "notional_usd"]
+    for (var i = 0; i < keys.length; i++) {
+      var v = pos[keys[i]]
+      if (v !== undefined && v !== null && isFinite(Number(v))) return Math.abs(Number(v))
+    }
+    var qty = Math.abs(Number(pos.qty))
+    var mark = Number(pos.mark)
+    if (isFinite(qty) && isFinite(mark) && mark > 0) return Math.abs(qty * mark)
+    return 0
+  }
+
+  function metric(caption, value, tone) {
+    return { caption: caption, value: value, color: toneColor(tone || "") }
+  }
+
   function clampedInteger(key, fallback, minimum, maximum) {
     var value = Math.round(Number(setting(key, fallback)))
     if (!isFinite(value)) value = fallback
@@ -94,6 +285,7 @@ BarWidget {
     if (name === "futures") return "Futures"
     if (name === "crash") return "Crash"
     if (name === "fed") return "Fed"
+    if (name === "treasury") return "Bitcoin Treasury"
     return String(name || "Book")
   }
 
@@ -253,15 +445,15 @@ BarWidget {
     var points = portfolio
     if (!points || points.length < 1 || canvas.width < 2 || canvas.height < 2) return
 
-    var strokeGreen = "#3cba7a"
-    var strokeRed = "#e07a7a"
+    var strokeGreen = "#FF8A1F"
+    var strokeRed = "#FF6B6B"
 
     if (points.length === 1) {
       var cx = canvas.width / 2
       var cy = canvas.height / 2
       ctx.beginPath()
       ctx.arc(cx, cy, 10, 0, Math.PI * 2)
-      ctx.fillStyle = "rgba(60, 186, 122, 0.18)"
+      ctx.fillStyle = "rgba(255, 138, 31, 0.18)"
       ctx.fill()
       ctx.beginPath()
       ctx.arc(cx, cy, 4.5, 0, Math.PI * 2)
@@ -316,10 +508,10 @@ BarWidget {
       ctx.beginPath()
       ctx.moveTo(padL, gy)
       ctx.lineTo(padL + plotW, gy)
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.10)"
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.07)"
       ctx.lineWidth = 1
       ctx.stroke()
-      ctx.fillStyle = "rgba(255, 255, 255, 0.45)"
+      ctx.fillStyle = "rgba(185, 167, 154, 0.85)"
       ctx.fillText(fmtAxis(gridVals[g]), padL - 6, gy)
     }
 
@@ -345,7 +537,7 @@ BarWidget {
     ctx.lineTo(xAt(0), bottomY)
     ctx.closePath()
     var grad = ctx.createLinearGradient(0, padT, 0, bottomY)
-    var fillRgb = rising ? "60, 186, 122" : "224, 122, 122"
+    var fillRgb = rising ? "255, 138, 31" : "255, 107, 107"
     grad.addColorStop(0, "rgba(" + fillRgb + ", 0.22)")
     grad.addColorStop(1, "rgba(" + fillRgb + ", 0.02)")
     ctx.fillStyle = grad
@@ -412,60 +604,86 @@ BarWidget {
   }
 
   function dashboardSections(payload) {
-    var rows = payload && payload.books ? payload.books : []
-    var sections = []
-    for (var i = 0; i < rows.length; i++) {
-      var book = rows[i]
-      var open = (book.open_positions === undefined || book.open_positions === null) ? "—" : String(book.open_positions)
-      if (book.max_book_positions) open += " / " + book.max_book_positions
-      var day = (book.daily_pnl_usd === undefined || book.daily_pnl_usd === null) ? "—" : dollars(book.daily_pnl_usd, true)
-      if (book.daily_loss_kill_usd !== undefined && book.daily_loss_kill_usd !== null)
-        day += " / " + dollars(book.daily_loss_kill_usd, false)
-      var cards = [
-        { label: "Equity", value: (book.equity_usd === undefined || book.equity_usd === null) ? "—" : dollars(book.equity_usd, false), color: Color.popups.text },
-        { label: "Cash", value: dollars(book.cash_usd, false), color: Color.popups.text },
-        { label: "Day", value: day, color: cardTone(book.daily_pnl_usd) },
-        { label: "Open", value: open, color: Color.popups.text }
-      ]
-      if (book.bankroll_usd !== undefined && book.bankroll_usd !== null
-          && amountsDiffer(book.bankroll_usd, book.equity_usd)
-          && amountsDiffer(book.bankroll_usd, book.cash_usd))
-        cards.splice(1, 0, { label: "Bankroll", value: dollars(book.bankroll_usd, false), color: Color.popups.text })
-      if (book.account_value_usd !== undefined && book.account_value_usd !== null
-          && amountsDiffer(book.account_value_usd, book.equity_usd)
-          && amountsDiffer(book.account_value_usd, book.cash_usd))
-        cards.push({ label: "Account", value: dollars(book.account_value_usd, false), color: Color.popups.text })
-      if (book.budget_usd !== undefined && book.budget_usd !== null
-          && amountsDiffer(book.budget_usd, book.equity_usd)
-          && amountsDiffer(book.budget_usd, book.cash_usd))
-        cards.push({ label: "Budget", value: dollars(book.budget_usd, false), color: Color.popups.text })
-      var title = bookTitle(book.name)
-      if (book.mode) title += " · " + book.mode
-      var positions = []
-      var held = book.positions || []
-      var positionTotal = 0
-      var valued = 0
-      for (var p = 0; p < held.length; p++) {
-        var heldValue = Number(held[p].value_usd)
-        if (isFinite(heldValue)) {
-          positionTotal += heldValue
-          valued += 1
-        }
-        positions.push({ text: positionLine(held[p]), color: cardTone(held[p].pnl_pct) })
+    var raw = payload && payload.books ? payload.books.slice(0) : []
+    var indexed = []
+    for (var r = 0; r < raw.length; r++) indexed.push({ book: raw[r], index: r })
+    indexed.sort(function(a, b) {
+      var ra = bookOrder.indexOf(String((a.book || {}).name || ""))
+      var rb = bookOrder.indexOf(String((b.book || {}).name || ""))
+      if (ra < 0) ra = 100
+      if (rb < 0) rb = 100
+      return ra !== rb ? ra - rb : a.index - b.index
+    })
+    var out = []
+    for (var i = 0; i < indexed.length; i++) {
+      var book = indexed[i].book
+      if (!book || typeof book !== "object") continue
+      var name = String(book.name || "")
+      var metrics = []
+      var extra = []
+      if (name === "treasury") {
+        metrics.push(metric("Mark value", maybeDollars(book.equity_usd, false)))
+        metrics.push(metric("Cost basis", maybeDollars(book.bankroll_usd, false)))
+        metrics.push(metric("Total P/L", maybeDollars(book.daily_pnl_usd, true), toneFor(book.daily_pnl_usd)))
+        metrics.push(metric("Holdings", tableQty(book.holdings_btc) + " BTC"))
+        if (book.avg_price_usd !== undefined && book.avg_price_usd !== null)
+          extra.push(metric("Avg cost", dollars(book.avg_price_usd, false)))
+        if (book.mark_btc_usd !== undefined && book.mark_btc_usd !== null)
+          extra.push(metric("BTC spot", dollars(book.mark_btc_usd, false)))
+        if (book.contribution_count !== undefined && book.contribution_count !== null)
+          extra.push(metric("Contributions", String(book.contribution_count)))
+      } else {
+        var open = (book.open_positions === undefined || book.open_positions === null) ? "—" : String(book.open_positions)
+        if (book.max_book_positions) open += " / " + book.max_book_positions
+        metrics.push(metric("Equity", maybeDollars(book.equity_usd, false)))
+        metrics.push(metric("Open lots", open))
+        metrics.push(metric("Day P/L", maybeDollars(book.daily_pnl_usd, true), toneFor(book.daily_pnl_usd)))
+        if (book.cash_usd !== undefined && book.cash_usd !== null && name !== "coinbase")
+          metrics.push(metric("Cash", dollars(book.cash_usd, false)))
+        if (book.daily_loss_kill_usd !== undefined && book.daily_loss_kill_usd !== null)
+          extra.push(metric("Loss stop", dollars(book.daily_loss_kill_usd, false)))
+        if (book.bankroll_usd !== undefined && book.bankroll_usd !== null
+            && amountsDiffer(book.bankroll_usd, book.equity_usd) && amountsDiffer(book.bankroll_usd, book.cash_usd))
+          extra.push(metric("Bankroll", dollars(book.bankroll_usd, false)))
+        if (book.account_value_usd !== undefined && book.account_value_usd !== null
+            && amountsDiffer(book.account_value_usd, book.equity_usd) && amountsDiffer(book.account_value_usd, book.cash_usd))
+          extra.push(metric("Account", dollars(book.account_value_usd, false)))
+        if (book.budget_usd !== undefined && book.budget_usd !== null
+            && amountsDiffer(book.budget_usd, book.equity_usd) && amountsDiffer(book.budget_usd, book.cash_usd))
+          extra.push(metric("Budget", dollars(book.budget_usd, false)))
       }
-      var showPositions = positions.length > 0
-      var positionLabel = valued > 0
-        ? ("Open positions · " + dollars(positionTotal, false))
-        : "Open positions"
-      sections.push({
+
+      var held = []
+      var source = book.positions || []
+      for (var p = 0; p < source.length; p++) {
+        var pos = source[p]
+        if (!pos || typeof pos !== "object") continue
+        // Spot: hide dust lots worth $1 or less.
+        if ((name === "coinbase" || name === "crypto") && spotNotional(pos) <= 1.0) continue
+        held.push(pos)
+      }
+      var limit = (name === "coinbase" || name === "crypto" || name === "treasury") ? -1 : 20
+      var shown = limit < 0 ? held : held.slice(0, limit)
+      var columns = columnsFor(name)
+      var rows = []
+      for (var s = 0; s < shown.length; s++) {
+        var cells = []
+        for (var c = 0; c < columns.length; c++) cells.push(cellFor(shown[s], columns[c].key))
+        rows.push(cells)
+      }
+      var title = bookTitle(name).toUpperCase()
+      if (book.mode) title += "  ·  " + String(book.mode).toUpperCase()
+      out.push({
         title: title,
-        cards: cards,
-        positions: positions,
-        positionLabel: positionLabel,
-        showPositions: showPositions
+        metrics: metrics,
+        extra: extra,
+        columns: columns,
+        rows: rows,
+        tableLabel: (name === "coinbase" || name === "crypto") ? "OPEN LOTS" : "HOLDINGS",
+        more: (limit >= 0 && held.length > limit) ? ("… " + (held.length - limit) + " more not shown") : ""
       })
     }
-    return sections
+    return out
   }
 
   function hostLabel() {
@@ -701,404 +919,626 @@ BarWidget {
     onClicked: root.togglePopup()
   }
 
+  // ── Otter-style building blocks ─────────────────────────────────────
+  // Inline components do not share the file's id scope, so the palette is
+  // spelled out here rather than read from root.
+  component OtterText: Text {
+    color: "#F2E8DE"
+    font.family: "JetBrainsMono Nerd Font"
+    font.pixelSize: 11
+    renderType: Text.NativeRendering
+  }
+
+  component OtterCard: Rectangle {
+    id: card
+    property color stripe: "#FF8A1F"
+    property color wash: "#2A1810"
+    property real washStop: 0.36
+    default property alias content: cardInner.data
+    width: parent ? parent.width : 0
+    implicitHeight: cardInner.implicitHeight + 24
+    radius: 10
+    border.width: 1
+    border.color: "#C45C12"
+    gradient: Gradient {
+      orientation: Gradient.Horizontal
+      GradientStop { position: 0.0; color: card.wash }
+      GradientStop { position: card.washStop; color: "#15110E" }
+    }
+
+    Rectangle {
+      x: 1
+      y: 1
+      width: 4
+      height: parent.height - 2
+      radius: 2
+      color: card.stripe
+    }
+
+    Column {
+      id: cardInner
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.leftMargin: 16
+      anchors.rightMargin: 14
+      anchors.topMargin: 12
+      spacing: 8
+    }
+  }
+
+  component OtterButton: Rectangle {
+    id: btn
+    property string text: ""
+    property bool active: true
+    property color tint: "#FF8A1F"
+    signal clicked()
+    implicitWidth: btnLabel.implicitWidth + 24
+    implicitHeight: btnLabel.implicitHeight + 10
+    radius: 6
+    color: btnMouse.containsMouse && btn.active ? "#3D220A" : "#211813"
+    border.width: 1
+    border.color: btn.tint
+    opacity: btn.active ? 1.0 : 0.55
+
+    OtterText {
+      id: btnLabel
+      anchors.centerIn: parent
+      text: btn.text
+      color: btn.tint
+    }
+
+    MouseArea {
+      id: btnMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: btn.active ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onClicked: if (btn.active) btn.clicked()
+    }
+  }
+
+  component MetricRow: Row {
+    id: mrow
+    property var items: []
+    property bool hero: false
+    width: parent ? parent.width : 0
+    spacing: 12
+    Repeater {
+      model: mrow.items
+      delegate: Column {
+        required property var modelData
+        width: (mrow.width - mrow.spacing * Math.max(0, mrow.items.length - 1)) / Math.max(1, mrow.items.length)
+        spacing: 2
+        OtterText {
+          width: parent.width
+          text: modelData.caption
+          color: "#B9A79A"
+          font.pixelSize: 10
+          elide: Text.ElideRight
+        }
+        OtterText {
+          width: parent.width
+          text: modelData.value
+          color: modelData.color
+          font.pixelSize: mrow.hero ? 26 : 18
+          font.bold: true
+          elide: Text.ElideRight
+        }
+      }
+    }
+  }
+
   PopupCard {
     id: popup
     anchorItem: root
     bar: root.bar
     owner: root
     open: root.popupOpen
-    contentWidth: popup.fittedContentWidth(Style.space(720))
-    contentHeight: popup.fittedContentHeight(bodyCol.implicitHeight, Style.space(640))
+    padding: 0
+    borderColor: root.cBorder
+    readonly property real desiredHeight: header.height
+      + (progressWrap.visible ? progressWrap.height : 0)
+      + bodyCol.implicitHeight + 26
+    contentWidth: popup.fittedContentWidth(860)
+    contentHeight: popup.fittedContentHeight(desiredHeight, 760)
 
-    Flickable {
-      id: bodyScroll
+    Rectangle {
+      id: shellBg
       anchors.fill: parent
-      contentWidth: width
-      contentHeight: bodyCol.implicitHeight
+      color: root.cBg
+      radius: Style.cornerRadius
       clip: true
-      boundsBehavior: Flickable.StopAtBounds
-      flickableDirection: Flickable.VerticalFlick
-      interactive: contentHeight > height
-
-      Column {
-        id: bodyCol
-        width: bodyScroll.width
-        spacing: Style.space(10)
 
       Column {
         width: parent.width
-        spacing: Style.space(4)
+        spacing: 0
 
-        Item {
-          width: parent.width
-          height: Math.max(titleText.implicitHeight, refreshText.implicitHeight)
-
-          Text {
-            id: titleText
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            text: "Snowball Robo Trader"
-            color: Color.popups.text
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.subtitle
-            font.bold: true
-            renderType: Text.NativeRendering
-          }
-
-          Text {
-            id: refreshText
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            text: root.refreshedAt === "" ? "—" : root.refreshedAt
-            color: Color.muted
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-            renderType: Text.NativeRendering
-          }
-        }
-
-        Row {
-          spacing: Style.space(6)
-
-          Rectangle {
-            anchors.verticalCenter: parent.verticalCenter
-            width: Style.space(8)
-            height: Style.space(8)
-            radius: width / 2
-            color: root.tone
-          }
-
-          Text {
-            anchors.verticalCenter: parent.verticalCenter
-            text: {
-              var parts = [root.stateWord(), root.tradingLabel()]
-              if (root.hasDetail && root.detail.tick_age_label)
-                parts.push(root.detail.tick_age_label)
-              else if (root.tickAge >= 0)
-                parts.push(root.tickAge + "s")
-              return parts.join(" · ")
-            }
-            color: Color.muted
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-            renderType: Text.NativeRendering
-          }
-        }
-      }
-
-      Item {
-        id: chartBox
-        width: parent.width
-        height: root.portfolio.length >= 1 ? Style.space(180) : 0
-        visible: root.portfolio.length >= 1
-
-        Item {
-          id: chartHeader
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.top: parent.top
-          height: Math.max(chartTitleRow.implicitHeight, chartWeekChange.implicitHeight)
-
-          Row {
-            id: chartTitleRow
-            anchors.left: parent.left
-            anchors.right: chartWeekChange.left
-            anchors.rightMargin: Style.space(12)
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(8)
-
-            Text {
-              id: chartTitle
-              anchors.verticalCenter: parent.verticalCenter
-              text: "Portfolio"
-              color: Color.popups.text
-              font.family: root.bar ? root.bar.fontFamily : Style.font.family
-              font.pixelSize: Style.font.body
-              font.bold: true
-              renderType: Text.NativeRendering
-            }
-
-            Text {
-              id: chartEquity
-              anchors.verticalCenter: parent.verticalCenter
-              text: root.dollars(root.portfolioValue(-1), false)
-              color: Color.popups.text
-              font.family: root.bar ? root.bar.fontFamily : Style.font.family
-              font.pixelSize: Style.font.subtitle * 2
-              font.bold: true
-              renderType: Text.NativeRendering
-            }
-
-            Text {
-              id: chartRangeCaption
-              anchors.verticalCenter: parent.verticalCenter
-              text: "7d"
-              color: Color.muted
-              font.family: root.bar ? root.bar.fontFamily : Style.font.family
-              font.pixelSize: Style.font.caption
-              renderType: Text.NativeRendering
-            }
-          }
-
-          Text {
-            id: chartWeekChange
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            text: root.weekChangeText()
-            color: root.cardTone(root.portfolioValue(-1) - root.portfolioValue(0))
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-            renderType: Text.NativeRendering
-          }
-        }
-
-        Canvas {
-          id: chartCanvas
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.top: chartHeader.bottom
-          anchors.topMargin: Style.space(8)
-          anchors.bottom: chartDates.top
-          onPaint: root.paintPortfolio(chartCanvas)
-          onWidthChanged: requestPaint()
-          onHeightChanged: requestPaint()
-        }
-
-        Item {
-          id: chartDates
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.bottom: parent.bottom
-          height: chartStart.implicitHeight
-
-          Text {
-            id: chartStart
-            anchors.left: parent.left
-            text: root.portfolio.length ? root.portfolio[0].label : ""
-            color: Color.muted
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-            renderType: Text.NativeRendering
-          }
-          Text {
-            anchors.right: parent.right
-            text: root.portfolio.length ? root.portfolio[root.portfolio.length - 1].label : ""
-            color: Color.muted
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-            renderType: Text.NativeRendering
-          }
-        }
-      }
-
-      Text {
-        width: parent.width
-        visible: root.headline.length > 0
-        text: root.headline
-        wrapMode: Text.WordWrap
-        color: Color.popups.text
-        font.family: root.bar ? root.bar.fontFamily : Style.font.family
-        font.pixelSize: Style.font.body
-        renderType: Text.NativeRendering
-      }
-
-      Text {
-        width: parent.width
-        visible: root.facts.length > 0
-        text: root.facts
-        wrapMode: Text.WordWrap
-        color: Color.muted
-        font.family: root.bar ? root.bar.fontFamily : Style.font.family
-        font.pixelSize: Style.font.caption
-        renderType: Text.NativeRendering
-      }
-
-      Column {
-        visible: root.snapBusy
-        width: parent.width
-        spacing: Style.space(4)
-
-        Text {
-          width: parent.width
-          text: root.loadPercent + "%  ·  " + (root.loadStage || "Loading")
-          color: Color.muted
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Style.font.caption
-          renderType: Text.NativeRendering
-        }
-
+        // Header: title, refresh, witty subtitle, status chips
         Rectangle {
+          id: header
           width: parent.width
-          height: Style.space(6)
-          radius: height / 2
-          color: Qt.rgba(Color.popups.text.r, Color.popups.text.g, Color.popups.text.b, 0.12)
+          height: headerCol.implicitHeight + 27
+          color: root.cSurface
 
-          Rectangle {
-            width: parent.width * Math.max(0, Math.min(100, root.loadPercent)) / 100
-            height: parent.height
-            radius: parent.radius
-            color: "#3cba7a"
-          }
-        }
-      }
+          Column {
+            id: headerCol
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.leftMargin: 16
+            anchors.rightMargin: 16
+            anchors.topMargin: 14
+            spacing: 4
 
-      Column {
-        id: boardCol
-        width: parent.width
-        spacing: Style.space(10)
+            Item {
+              width: parent.width
+              height: Math.max(titleText.implicitHeight, refreshButton.implicitHeight)
 
-          Text {
-            visible: root.sections.length === 0
-            width: parent.width
-            text: root.snapBusy ? "Reading cards…" : "No cards yet."
-            color: Color.muted
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-            renderType: Text.NativeRendering
-          }
-
-          Repeater {
-            model: root.sections
-            delegate: Rectangle {
-              required property var modelData
-              width: boardCol.width
-              radius: Style.space(8)
-              color: Qt.rgba(Color.popups.text.r, Color.popups.text.g, Color.popups.text.b, 0.06)
-              border.width: 1
-              border.color: Color.popups.border
-              implicitHeight: sectionInner.implicitHeight + Style.space(20)
-
-              Column {
-                id: sectionInner
+              OtterText {
+                id: titleText
                 anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: Style.space(10)
-                spacing: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                text: "❄  Snowball Robo Trader"
+                color: root.cAccent
+                font.pixelSize: 15
+                font.bold: true
+              }
 
-                Text {
-                  width: parent.width
-                  text: modelData.title
-                  color: Color.muted
-                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                  font.capitalization: Font.AllUppercase
-                  renderType: Text.NativeRendering
+              Row {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 8
+
+                OtterText {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.refreshedAt === "" ? "—" : root.refreshedAt
+                  color: root.cMuted
                 }
 
-                Grid {
+                OtterButton {
+                  id: refreshButton
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.snapBusy ? "Refreshing" : "Refresh"
+                  active: !root.snapBusy && !root.restartBusy
+                  onClicked: root.refresh()
+                }
+              }
+            }
+
+            OtterText {
+              width: parent.width
+              text: root.popupSubtitle
+              color: root.cMuted
+              elide: Text.ElideRight
+            }
+
+            Row {
+              spacing: 6
+              topPadding: 2
+
+              Repeater {
+                model: root.statusChips
+                delegate: Rectangle {
+                  required property var modelData
+                  readonly property color tc: root.toneColor(modelData.tone)
+                  width: chipText.implicitWidth + 18
+                  height: chipText.implicitHeight + 4
+                  radius: height / 2
+                  color: Qt.rgba(tc.r, tc.g, tc.b, 0.16)
+                  border.width: 1
+                  border.color: tc
+
+                  OtterText {
+                    id: chipText
+                    anchors.centerIn: parent
+                    text: modelData.label
+                    color: parent.tc
+                    font.pixelSize: 9
+                    font.bold: true
+                  }
+                }
+              }
+            }
+          }
+
+          Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: root.cBorder
+          }
+        }
+
+        // Loading strip while the Coinbase snapshot runs
+        Rectangle {
+          id: progressWrap
+          visible: root.snapBusy
+          width: parent.width
+          height: visible ? progressCol.implicitHeight + 18 : 0
+          color: root.cSurface
+
+          Column {
+            id: progressCol
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.leftMargin: 16
+            anchors.rightMargin: 16
+            anchors.topMargin: 8
+            spacing: 4
+
+            OtterText {
+              text: root.loadPercent + "%  ·  " + (root.loadStage || "Loading")
+              color: root.cMuted
+              font.pixelSize: 10
+            }
+
+            Rectangle {
+              width: parent.width
+              height: 6
+              radius: 4
+              color: root.cSurfaceAlt
+
+              Rectangle {
+                width: parent.width * Math.max(0, Math.min(100, root.loadPercent)) / 100
+                height: parent.height
+                radius: parent.radius
+                color: root.cAccent
+              }
+            }
+          }
+
+          Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: root.cBorder
+          }
+        }
+
+        Flickable {
+          id: bodyScroll
+          width: parent.width
+          height: Math.max(0, shellBg.height - header.height - progressWrap.height)
+          contentWidth: width
+          contentHeight: bodyCol.implicitHeight + 26
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
+          interactive: contentHeight > height
+
+          Column {
+            id: bodyCol
+            x: 14
+            y: 12
+            width: bodyScroll.width - 28
+            spacing: 12
+
+            // Portfolio 7d chart
+            OtterCard {
+              visible: root.portfolio.length >= 1
+              washStop: 0.28
+
+              Item {
+                width: parent.width
+                height: Math.max(chartTitleRow.implicitHeight, chartWeekChange.implicitHeight)
+
+                Row {
+                  id: chartTitleRow
+                  anchors.left: parent.left
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: 8
+
+                  OtterText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "PORTFOLIO 7D"
+                    color: root.cAccent
+                    font.pixelSize: 12
+                    font.bold: true
+                    font.letterSpacing: 0.6
+                  }
+
+                  OtterText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.dollars(root.portfolioValue(-1), false)
+                    font.pixelSize: 28
+                    font.bold: true
+                  }
+
+                  OtterText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "7d"
+                    color: root.cMuted
+                    font.pixelSize: 10
+                  }
+                }
+
+                OtterText {
+                  id: chartWeekChange
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.weekChangeText()
+                  color: {
+                    var tone = root.toneFor(root.portfolioValue(-1) - root.portfolioValue(0))
+                    return tone ? root.toneColor(tone) : root.cMuted
+                  }
+                  font.pixelSize: 10
+                }
+              }
+
+              Canvas {
+                id: chartCanvas
+                width: parent.width
+                height: 168
+                onPaint: root.paintPortfolio(chartCanvas)
+                onWidthChanged: requestPaint()
+                onHeightChanged: requestPaint()
+              }
+
+              Item {
+                width: parent.width
+                height: chartStart.implicitHeight
+
+                OtterText {
+                  id: chartStart
+                  anchors.left: parent.left
+                  text: root.portfolio.length ? root.portfolio[0].label : ""
+                  color: root.cMuted
+                  font.pixelSize: 10
+                }
+                OtterText {
+                  anchors.right: parent.right
+                  text: root.portfolio.length ? root.portfolio[root.portfolio.length - 1].label : ""
+                  color: root.cMuted
+                  font.pixelSize: 10
+                }
+              }
+            }
+
+            // Portfolio hero metrics: Day P/L + Equity at 26px
+            OtterCard {
+              readonly property string pnlTone: root.toneFor(root.dayPnl)
+              stripe: pnlTone === "ok" ? root.cOk : (pnlTone === "bad" ? root.cBad : root.cAccent)
+              wash: pnlTone === "ok" ? "#102418" : (pnlTone === "bad" ? "#2A1212" : "#2A1810")
+
+              OtterText {
+                text: "PORTFOLIO"
+                color: root.cAccent
+                font.pixelSize: 12
+                font.bold: true
+                font.letterSpacing: 0.6
+              }
+
+              Row {
+                width: parent.width
+                spacing: 12
+
+                MetricRow {
+                  width: (parent.width - 12) * 2 / 3
+                  hero: true
+                  items: [
+                    root.metric("Day P/L", root.hasDetail ? root.maybeDollars(root.detail.daily_pnl_usd, true) : "—", root.toneFor(root.dayPnl)),
+                    root.metric("Equity", root.hasDetail ? root.maybeDollars(root.detail.equity_usd, false) : "—")
+                  ]
+                }
+
+                MetricRow {
+                  width: (parent.width - 12) / 3
+                  items: [root.metric("Cash", root.hasDetail ? root.maybeDollars(root.detail.cash_usd, false) : "—")]
+                }
+              }
+
+              OtterText {
+                readonly property string footText: {
+                  var parts = []
+                  if (root.hasDetail && root.detail.tick_age_label) parts.push("tick " + root.detail.tick_age_label)
+                  else if (root.tickAge >= 0) parts.push("tick " + root.tickAge + "s")
+                  if (root.hasDetail && root.detail.source) parts.push(String(root.detail.source))
+                  return parts.join(" · ")
+                }
+                visible: footText.length > 0
+                text: footText
+                color: root.cMuted
+                font.pixelSize: 10
+              }
+            }
+
+            // Flags: block reasons / last error
+            OtterCard {
+              visible: root.flagList.length > 0
+              stripe: root.cWarn
+              wash: "#2A2010"
+
+              OtterText {
+                text: "FLAGS"
+                color: root.cAccent
+                font.pixelSize: 12
+                font.bold: true
+                font.letterSpacing: 0.6
+              }
+
+              Repeater {
+                model: root.flagList
+                delegate: OtterText {
+                  required property var modelData
+                  width: parent ? parent.width : 0
+                  text: "· " + modelData
+                  color: root.cWarn
+                  wrapMode: Text.WordWrap
+                }
+              }
+            }
+
+            // Waiting for the first snapshot
+            OtterCard {
+              visible: root.sections.length === 0
+              stripe: root.cAccent
+
+              OtterText {
+                text: "SNAPSHOT"
+                color: root.cAccent
+                font.pixelSize: 12
+                font.bold: true
+                font.letterSpacing: 0.6
+              }
+
+              OtterText {
+                width: parent.width
+                text: root.snapBusy
+                  ? "Reading Coinbase balances over SSH…"
+                  : (root.detailError ? ("No detail yet: " + root.detailError) : "Detail snapshot not ready yet.\nChip fills once Coinbase SSH returns.")
+                color: root.cMuted
+                font.pixelSize: 10
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            // Per-book cards
+            Repeater {
+              model: root.sections
+              delegate: OtterCard {
+                id: bookCard
+                required property var modelData
+                readonly property var sec: modelData
+                stripe: root.cBorder
+                wash: "#1C120C"
+                washStop: 0.30
+
+                OtterText {
+                  text: bookCard.sec.title
+                  color: root.cAccent
+                  font.pixelSize: 12
+                  font.bold: true
+                  font.letterSpacing: 0.6
+                }
+
+                MetricRow {
+                  items: bookCard.sec.metrics
+                }
+
+                MetricRow {
+                  visible: bookCard.sec.extra.length > 0
+                  items: bookCard.sec.extra
+                }
+
+                OtterText {
+                  visible: bookCard.sec.rows.length > 0
+                  text: bookCard.sec.tableLabel
+                  color: root.cMuted
+                  font.pixelSize: 10
+                }
+
+                Column {
+                  id: table
+                  visible: bookCard.sec.rows.length > 0
                   width: parent.width
-                  columns: 4
-                  columnSpacing: Style.space(6)
-                  rowSpacing: Style.space(6)
+                  spacing: 3
+
+                  Row {
+                    spacing: 10
+                    Repeater {
+                      model: bookCard.sec.columns
+                      delegate: OtterText {
+                        required property var modelData
+                        required property int index
+                        width: root.columnWidth(bookCard.sec.columns, index, table.width)
+                        horizontalAlignment: modelData.align === "right" ? Text.AlignRight : Text.AlignLeft
+                        text: modelData.title
+                        color: root.cMuted
+                        font.pixelSize: 9
+                        font.bold: true
+                        font.letterSpacing: 0.4
+                        elide: Text.ElideRight
+                      }
+                    }
+                  }
 
                   Repeater {
-                    model: modelData.cards
-                    delegate: Rectangle {
+                    model: bookCard.sec.rows
+                    delegate: Row {
+                      id: posRow
                       required property var modelData
-                      width: (sectionInner.width - Style.space(6) * 3) / 4
-                      height: Style.space(60)
-                      radius: Style.space(6)
-                      color: Qt.rgba(Color.popups.text.r, Color.popups.text.g, Color.popups.text.b, 0.06)
-                      border.width: 1
-                      border.color: Color.popups.border
-
-                      Column {
-                        anchors.fill: parent
-                        anchors.margins: Style.space(6)
-                        spacing: Style.space(2)
-
-                        Text {
-                          width: parent.width
-                          text: modelData.label
-                          color: Color.muted
-                          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                          font.pixelSize: Style.font.caption
-                          font.capitalization: Font.AllUppercase
-                          elide: Text.ElideRight
-                          renderType: Text.NativeRendering
-                        }
-
-                        Text {
-                          width: parent.width
-                          text: modelData.value
+                      readonly property var cells: modelData
+                      spacing: 10
+                      Repeater {
+                        model: posRow.cells
+                        delegate: OtterText {
+                          required property var modelData
+                          required property int index
+                          width: root.columnWidth(bookCard.sec.columns, index, table.width)
+                          horizontalAlignment: bookCard.sec.columns[index].align === "right" ? Text.AlignRight : Text.AlignLeft
+                          text: modelData.text
                           color: modelData.color
-                          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                          font.pixelSize: Style.font.body
-                          font.bold: true
+                          font.pixelSize: 10
                           elide: Text.ElideRight
-                          renderType: Text.NativeRendering
                         }
                       }
                     }
                   }
                 }
 
-                Column {
-                  visible: modelData.showPositions === true
-                  width: parent.width
-                  spacing: Style.space(2)
+                OtterText {
+                  visible: bookCard.sec.more.length > 0
+                  text: bookCard.sec.more
+                  color: root.cMuted
+                  font.pixelSize: 10
+                }
+              }
+            }
 
-                  Text {
-                    width: parent.width
-                    text: modelData.positionLabel || "Open positions"
-                    color: Color.muted
-                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                    font.pixelSize: Style.font.caption
-                    font.capitalization: Font.AllUppercase
-                    renderType: Text.NativeRendering
-                  }
+            // Host status + restart (kept from the Omarchy plugin)
+            OtterCard {
+              stripe: root.level === "fault" ? root.cBad : (root.level === "offline" ? root.cWarn : root.cBorder)
+              wash: "#1C120C"
+              washStop: 0.30
 
-                  Repeater {
-                    model: modelData.positions
-                    delegate: Text {
-                      required property var modelData
-                      width: sectionInner.width
-                      text: modelData.text
-                      wrapMode: Text.WordWrap
-                      color: modelData.color
-                      font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                      font.pixelSize: Style.font.caption
-                      renderType: Text.NativeRendering
-                    }
-                  }
+              OtterText {
+                text: "HOST"
+                color: root.cAccent
+                font.pixelSize: 12
+                font.bold: true
+                font.letterSpacing: 0.6
+              }
+
+              OtterText {
+                width: parent.width
+                visible: root.headline.length > 0
+                text: root.headline
+                wrapMode: Text.WordWrap
+              }
+
+              OtterText {
+                width: parent.width
+                visible: root.facts.length > 0
+                text: root.facts
+                color: root.cMuted
+                font.pixelSize: 10
+                wrapMode: Text.WordWrap
+              }
+
+              Row {
+                spacing: 10
+                topPadding: 2
+
+                OtterButton {
+                  text: root.restartBusy ? "Restarting" : (root.armRestart ? "Restart now" : "Restart")
+                  active: !root.restartBusy
+                  tint: root.armRestart ? root.cBad : root.cAccent
+                  onClicked: root.onRestartClicked()
+                }
+
+                OtterButton {
+                  visible: root.armRestart && !root.restartBusy
+                  text: "Cancel"
+                  tint: root.cMuted
+                  onClicked: root.armRestart = false
                 }
               }
             }
           }
         }
-
-      Row {
-        spacing: Style.space(10)
-
-        Button {
-          text: root.snapBusy ? "Refreshing" : "Refresh"
-          enabled: !root.snapBusy && !root.restartBusy
-          bordered: true
-          foreground: Color.popups.text
-          onClicked: root.refresh()
-        }
-
-        Button {
-          text: root.restartBusy ? "Restarting" : (root.armRestart ? "Restart now" : "Restart")
-          enabled: !root.restartBusy
-          bordered: true
-          foreground: root.armRestart ? Color.urgent : Color.popups.text
-          onClicked: root.onRestartClicked()
-        }
-
-        Button {
-          visible: root.armRestart && !root.restartBusy
-          text: "Cancel"
-          bordered: true
-          foreground: Color.popups.text
-          onClicked: root.armRestart = false
-        }
-      }
-
-      // Bottom pad so the last cards/actions clear the clip edge
-      Item { width: 1; height: Style.space(8) }
       }
     }
   }
