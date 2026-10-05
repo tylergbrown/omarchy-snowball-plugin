@@ -654,6 +654,96 @@ try:
         })
 except Exception:
     futures = []
+spot_lots = []
+try:
+    import sqlite3
+    con = sqlite3.connect("file:/app/data/snowball.db?mode=ro", uri=True)
+    for row in con.execute(
+        "select product, side, qty, entry_price, notional_usd, strategy, "
+        "unrealized_pnl, mark "
+        "from positions where status='open' order by opened_at"
+    ):
+        spot_lots.append({
+            "product": row[0],
+            "side": row[1],
+            "qty": row[2],
+            "entry_price": row[3],
+            "notional_usd": row[4],
+            "strategy": row[5],
+            "unrealized_pnl": row[6],
+            "mark": row[7],
+        })
+    con.close()
+except Exception:
+    # Older schemas may lack mark/unrealized columns — retry with basics.
+    try:
+        import sqlite3
+        con = sqlite3.connect("file:/app/data/snowball.db?mode=ro", uri=True)
+        for row in con.execute(
+            "select product, side, qty, entry_price, notional_usd, strategy "
+            "from positions where status='open' order by opened_at"
+        ):
+            spot_lots.append({
+                "product": row[0],
+                "side": row[1],
+                "qty": row[2],
+                "entry_price": row[3],
+                "notional_usd": row[4],
+                "strategy": row[5],
+            })
+        con.close()
+    except Exception:
+        spot_lots = []
+
+treasury = None
+try:
+    import sqlite3, os
+    tpath = os.environ.get("TREASURY_SQLITE_PATH", "/app/data/snowball_treasury.db")
+    con = sqlite3.connect(f"file:{tpath}?mode=ro", uri=True)
+    row = con.execute(
+        "select coalesce(sum(btc_qty),0), coalesce(sum(usd_amount),0), count(*) "
+        "from contributions"
+    ).fetchone()
+    holdings_btc = float(row[0] or 0)
+    cost = float(row[1] or 0)
+    n = int(row[2] or 0)
+    mark_btc = None
+    # Prefer latest recorded mark spot; else try live ticker.
+    try:
+        mrow = con.execute(
+            "select btc_usd, mark_value_usd, unrealized_pnl_usd from marks order by ts desc limit 1"
+        ).fetchone()
+    except Exception:
+        mrow = None
+    if mrow is not None:
+        mark_btc = float(mrow[0] or 0) or None
+    if mark_btc is None or mark_btc <= 0:
+        for pair in ("BTC/USD", "BTC/USDC"):
+            try:
+                ticker = m.exchange.fetch_ticker(pair)
+                last = float(ticker.get("last") or 0)
+            except Exception:
+                last = 0.0
+            if last > 0:
+                mark_btc = last
+                break
+    mark_value = round(holdings_btc * mark_btc, 2) if mark_btc and holdings_btc else 0.0
+    avg = (cost / holdings_btc) if holdings_btc > 0 else None
+    pnl = round(mark_value - cost, 2) if holdings_btc > 0 else None
+    treasury = {
+        "holdings_btc": holdings_btc,
+        "cost_basis_usd": round(cost, 2),
+        "avg_price_usd": None if avg is None else round(avg, 2),
+        "mark_btc_usd": None if mark_btc is None else round(mark_btc, 2),
+        "mark_value_usd": mark_value,
+        "total_pnl_usd": pnl,
+        "contribution_count": n,
+        "empty": holdings_btc <= 0,
+    }
+    con.close()
+except Exception:
+    treasury = None
+
 print(json.dumps({
     "account_value_usd": round(account, 2),
     "cash_usd": round(cash, 2),
@@ -661,7 +751,9 @@ print(json.dumps({
     "futures_pnl_usd": round(futures_pnl, 2),
     "holdings": holdings,
     "futures": futures,
-}))
+    "spot_lots": spot_lots,
+    "treasury": treasury,
+}, default=str))
 """
 
 
@@ -872,7 +964,64 @@ def coinbase_status(base: str, user: str, container: str) -> dict:
         })
     spot_value = float(payload.get("account_value_usd") or 0)
     account = round(spot_value + futures_cash + futures_pnl, 2)
+    raw_lots = payload.get("spot_lots") if isinstance(payload.get("spot_lots"), list) else []
+    open_lots = slim_positions(raw_lots) if raw_lots else []
+    # Prefer bot open lots (strategy entries) for the Spot section; fall back to wallet aggregates.
+    spot_book_positions = open_lots if open_lots else spot_positions
+    spot_equity = round(spot_value - float(payload.get("cash_usd") or 0), 2)
+
+    treasury = payload.get("treasury") if isinstance(payload.get("treasury"), dict) else None
+    t_book = None
+    if treasury and not treasury.get("empty"):
+        t_qty = treasury.get("holdings_btc")
+        t_mark = treasury.get("mark_btc_usd")
+        t_avg = treasury.get("avg_price_usd")
+        t_value = treasury.get("mark_value_usd")
+        t_cost = treasury.get("cost_basis_usd")
+        t_pnl = treasury.get("total_pnl_usd")
+        t_pos = [{
+            "product": "BTC-USD",
+            "side": "long",
+            "qty": t_qty,
+            "entry_price": t_avg,
+            "mark": t_mark,
+            "value_usd": t_value,
+            "unrealized_pnl": t_pnl,
+            "strategy": "treasury",
+            # Fraction, not percent: attach_marks/pnl_percent scales abs<=3 by 100.
+            "pnl_pct": (
+                (float(t_pnl) / float(t_cost))
+                if t_pnl is not None and t_cost and float(t_cost) != 0
+                else None
+            ),
+        }]
+        t_book = {
+            "name": "treasury",
+            "mode": "reserve",
+            "equity_usd": t_value,
+            "bankroll_usd": t_cost,
+            "daily_pnl_usd": t_pnl,
+            "open_positions": 1,
+            "positions": t_pos,
+            "contribution_count": treasury.get("contribution_count"),
+            "avg_price_usd": t_avg,
+            "holdings_btc": t_qty,
+            "mark_btc_usd": t_mark,
+        }
+
+    # Popup section order: Portfolio (separate) → Cash → Treasury → Futures → Spot
     books = []
+    if cash_positions:
+        books.append({
+            "name": "cash",
+            "mode": "live",
+            "equity_usd": round(float(payload.get("cash_usd") or 0) + futures_cash, 2),
+            "cash_usd": round(float(payload.get("cash_usd") or 0) + futures_cash, 2),
+            "open_positions": len(cash_positions),
+            "positions": cash_positions,
+        })
+    if t_book is not None:
+        books.append(t_book)
     if futures:
         books.append({
             "name": "futures",
@@ -883,24 +1032,36 @@ def coinbase_status(base: str, user: str, container: str) -> dict:
             "open_positions": len(futures),
             "positions": futures,
         })
-    if cash_positions:
-        books.append({
-            "name": "cash",
-            "mode": "live",
-            "equity_usd": round(float(payload.get("cash_usd") or 0) + futures_cash, 2),
-            "cash_usd": round(float(payload.get("cash_usd") or 0) + futures_cash, 2),
-            "open_positions": len(cash_positions),
-            "positions": cash_positions,
-        })
-    if spot_positions:
+    if spot_book_positions or spot_equity:
         books.append({
             "name": "coinbase",
             "mode": "live",
-            "equity_usd": round(spot_value - float(payload.get("cash_usd") or 0), 2),
+            "equity_usd": spot_equity,
             "cash_usd": payload.get("cash_usd"),
-            "open_positions": len(spot_positions),
-            "positions": spot_positions,
+            "open_positions": len(spot_book_positions),
+            "positions": spot_book_positions,
         })
+    emit_line({"progress": 94, "stage": "Marking open spot lots"})
+    attach_marks(books)
+    # Drop Spot dust (<= $1 notional). Treasury / cash / futures untouched.
+    for book in books:
+        if book.get("name") not in ("coinbase", "crypto"):
+            continue
+        kept = []
+        for pos in book.get("positions") or []:
+            if not isinstance(pos, dict):
+                continue
+            value = position_value(pos)
+            if value is None:
+                try:
+                    value = float(pos.get("value_usd"))
+                except (TypeError, ValueError):
+                    value = 0.0
+            if abs(float(value or 0)) > 1.0:
+                kept.append(pos)
+        book["positions"] = kept
+        book["open_positions"] = len(kept)
+
     # Health supplies mode/ok; optional short snapshot fills status flags only.
     h = health(base)
     mode = h.get("mode") or "live"
