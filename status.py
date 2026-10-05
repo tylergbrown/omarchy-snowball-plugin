@@ -744,6 +744,27 @@ try:
 except Exception:
     treasury = None
 
+dividend = None
+dividend_error = None
+try:
+    import os as _os
+    from pathlib import Path as _P
+    from snowball.treasury.dca import dividend_status
+    _free = None
+    _fm = bal.get("free") if isinstance(bal.get("free"), dict) else {}
+    for _k in ("USD", "USDC", "USDT"):
+        if _fm.get(_k) is not None:
+            _free = float(_fm[_k])
+            break
+    dividend = dividend_status(
+        _P(_os.environ.get("TREASURY_SQLITE_PATH", "/app/data/snowball_treasury.db")),
+        _P("/app/data"),
+        free_usd=_free,
+    )
+except Exception as _exc:
+    dividend = None
+    dividend_error = (type(_exc).__name__ + ": " + str(_exc))[:160]
+
 print(json.dumps({
     "account_value_usd": round(account, 2),
     "cash_usd": round(cash, 2),
@@ -753,8 +774,11 @@ print(json.dumps({
     "futures": futures,
     "spot_lots": spot_lots,
     "treasury": treasury,
+    "dividend": dividend,
+    "dividend_error": dividend_error,
 }, default=str))
 """
+
 
 
 def _daily_closes(product: str) -> dict[str, float]:
@@ -875,6 +899,275 @@ def _remember_portfolio(value: float) -> list[dict]:
         day = datetime.fromisoformat(str(row["date"]))
         series.append({"date": row["date"], "label": f"{day.strftime('%b')} {day.day}", "value": row["value"]})
     return series
+
+
+# --- Daily dividend display model (ported from pika-plugin/bin/snowball-status.py 1.4.1) ---
+try:
+    from zoneinfo import ZoneInfo as _ZI
+    CT_ZONE = _ZI("America/Chicago")
+except Exception:  # noqa: BLE001
+    CT_ZONE = None
+
+
+def _usd(v, signed: bool = False) -> str:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return "\u2014"
+    sign = "+" if signed and x > 0 else ("-" if x < 0 else "")
+    return f"{sign}${abs(x):,.2f}"
+
+
+def _btc(v) -> str:
+    try:
+        return f"{float(v):.8f}"
+    except (TypeError, ValueError):
+        return "\u2014"
+
+
+def _ct_when(iso, with_day: bool = True) -> str:
+    try:
+        t = datetime.fromisoformat(str(iso))
+    except (TypeError, ValueError):
+        return "\u2014"
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    if CT_ZONE is not None:
+        t = t.astimezone(CT_ZONE)
+    hm = t.strftime("%I:%M %p").lstrip("0")
+    if not with_day:
+        return hm
+    now = datetime.now(t.tzinfo)
+    if t.date() == now.date():
+        return f"today {hm}"
+    if t.date() == (now + timedelta(days=1)).date():
+        return f"tomorrow {hm}"
+    return f"{t.strftime('%b')} {t.day} {hm}"
+
+
+def _tone(v) -> str:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return ""
+    return "green" if x > 0 else ("red" if x < 0 else "")
+
+
+def _vs(diff, beat, running=False) -> str:
+    if diff is None or beat is None:
+        return "\u2014"
+    amt = f"${abs(float(diff)):,.2f}"
+    if running:
+        return f"ahead by {amt} so far" if beat else f"behind by {amt} so far"
+    return f"beat by {amt}" if beat else f"missed by {amt}"
+
+
+def ytd_cards(y: dict | None) -> tuple[list[dict], list[dict], list[dict]]:
+    """YTD average daily profit + $100 streak cards/notes/series (dividend_status()['ytd'])."""
+    if not isinstance(y, dict):
+        return [], [], []
+    if y.get("error"):
+        return [], [{"text": "YTD average unavailable (" + str(y.get("error"))[:80] + ")", "tone": "red"}], []
+    avg = y.get("avg_usd")
+    td, yd = y.get("today") or {}, y.get("yesterday") or {}
+    mn = float(y.get("minimum_usd") or 100)
+    need = int(y.get("topup_streak_days") or 5)
+    ms = int(y.get("min_streak") or 0)
+    unlocked = bool(y.get("topup_unlocked"))
+    g = "ytd"
+    dash = "\u2014"
+    cards = [
+        {"label": "YTD avg/day", "value": _usd(avg, True) if avg is not None else "\u2014", "tone": _tone(avg), "group": g},
+        {"label": "YTD days", "value": f"{int(y.get('days') or 0)} since {str(y.get('first_day') or '')[5:] or dash}", "tone": "", "group": g},
+        {"label": "YTD total", "value": _usd(y.get("total_usd") or 0, True), "tone": _tone(y.get("total_usd")), "group": g},
+        {"label": "Today vs avg", "value": _vs(td.get("diff_usd"), td.get("beating"), True), "tone": ("green" if td.get("beating") else ("red" if td.get("beating") is False else "")), "group": g},
+        {"label": "Yesterday vs avg", "value": _vs(yd.get("diff_usd"), yd.get("beat")), "tone": ("green" if yd.get("beat") else ("red" if yd.get("beat") is False else "")), "group": g},
+        {"label": "Beat streak", "value": f"{int(y.get('beat_streak') or 0)} \u00b7 best {int(y.get('best_streak') or 0)}", "tone": "green" if y.get("beat_streak") else "", "group": g},
+        {"label": "Days beaten", "value": f"{int(y.get('days_beaten') or 0)}/{int(y.get('days_compared') or 0)}", "tone": "", "group": g},
+        {"label": f"${mn:,.0f} streak", "value": f"{min(ms, need)}/{need}" + (" \u2713 unlocked" if unlocked else ""), "tone": "green" if unlocked else ("green" if ms else ""), "group": g},
+        {"label": f"Best ${mn:,.0f} streak", "value": f"{int(y.get('best_min_streak') or 0)} YTD", "tone": "", "group": g},
+    ]
+    notes = []
+    if unlocked:
+        notes.append({"text": f"TOP-UP UNLOCKED \u2014 {y.get('min_streak_text')}", "tone": "green"})
+    elif y.get("min_streak_text"):
+        notes.append({"text": str(y.get("min_streak_text")), "tone": "green" if ms else ""})
+    if y.get("goal"):
+        notes.append({"text": str(y.get("goal")), "tone": ""})
+    day_window = y.get("day_window") or "3pm\u21923pm CT (dividend window)"
+    notes.append({"text": f"YTD day = {day_window}, live closed P/L all lanes; red/flat/no-trade days count; "
+                          f"resets {y.get('year_reset') or '01-01'} CT (next {y.get('next_reset') or dash})", "tone": ""})
+    series = [{"date": r.get("date"), "net_usd": r.get("net_usd"), "avg_usd": r.get("avg_after_usd"), "beat": r.get("beat"),
+               "over_minimum": r.get("over_minimum")} for r in (y.get("series") or []) if isinstance(r, dict)]
+    return cards, notes, series
+
+
+
+def treasury_section(tre: dict | None) -> dict | None:
+    """Bitcoin treasury card + Daily profit dividend block (display model only)."""
+    if not isinstance(tre, dict):
+        return None
+    if tre.get("error"):
+        return {"title": "Bitcoin treasury", "cards": [], "error": tre["error"], "dividend": None}
+    qty = float(tre.get("btc") or 0)
+    cost = float(tre.get("cost_usd") or 0)
+    px = tre.get("btc_price")
+    value = qty * float(px) if px else None
+    cards = [
+        {"label": "BTC", "value": _btc(qty), "tone": ""},
+        {"label": "Value", "value": _usd(value) if value is not None else "\u2014", "tone": ""},
+        {"label": "Cost", "value": _usd(cost), "tone": ""},
+        {"label": "P/L", "value": _usd(value - cost, True) if value is not None else "\u2014",
+         "tone": _tone(value - cost) if value is not None else ""},
+    ]
+    out = {"title": "Bitcoin treasury", "cards": cards, "error": None, "dividend": None,
+           "note": f"{int(tre.get('contributions') or 0)} contributions \u00b7 held in the Coinbase spot wallet, "
+                   "never sold, not deployable bankroll"}
+    div = tre.get("dividend")
+    if not isinstance(div, dict):
+        out["dividend"] = {"label": "Daily Dividend \u2014 Robo Trader \u2192 Treasury", "rule_text": "",
+                           "cards": [], "target": None, "notes": [], "recent": [],
+                           "empty": "Dividend status unavailable (" + str(tre.get("dividend_error") or "no data") + ")"}
+        return out
+    today = div.get("today") or {}
+    state = str(today.get("state") or "pending")
+    outcome = today.get("outcome")
+    reason = today.get("reason") or today.get("error")
+    if state == "done" and outcome == "rolled_below_min":
+        status, stone = "Rolled", ""
+        reason = f"profit {_usd(today.get('carry_out_usd'))} below Coinbase minimum \u2014 rolls to next green day"
+    elif state == "done":
+        status, stone = "Paid", "green"
+        reason = None
+    elif state == "skipped":
+        status, stone = "Skipped \u00b7 low cash", "red"
+    elif state == "in_doubt":
+        status, stone = "In doubt", "red"
+        reason = reason or "order state unknown \u2014 check Coinbase (never auto-retried)"
+    else:
+        status, stone = "Pending", ""
+        reason = None
+    pend = div.get("pending") or {}
+    rule = pend.get("rule")
+    try:
+        _fl = float(div.get("red_day_floor_usd"))
+    except (TypeError, ValueError):
+        _fl = 10.0  # Tb 2026-09-30: red-day floor $10 (was $50); the $50 profit target is separate
+    floor_txt = f"${_fl:,.0f}" if _fl == int(_fl) else f"${_fl:,.2f}"
+    try:
+        _mn = float(div.get("daily_profit_min_usd") or div.get("daily_target_usd") or 100)
+    except (TypeError, ValueError):
+        _mn = 100.0  # Tb 2026-10-01: daily profit minimum $100 (was $50)
+    min_txt = f"${_mn:,.0f}" if _mn == int(_mn) else f"${_mn:,.2f}"
+    rule_txt = "Profit day \u00b7 100%" if rule == "profit" else (f"Red day \u00b7 {floor_txt} floor" if rule else "\u2014")
+    if pend.get("below_min"):
+        rule_txt = "Profit < min \u00b7 rolls"
+    net = div.get("today_net_closed_usd")
+    tg = div.get("target") or {}
+    cc = div.get("cash_check") or {}
+    tot = div.get("totals") or {}
+    wk = div.get("week") or {}
+    mo = div.get("month") or {}
+    last = div.get("last") or {}
+    share = div.get("dividend_btc_share_pct")
+    w = div.get("window") or {}
+    cards = [
+        {"label": "Today", "value": status, "tone": stone},
+        {"label": "Rule", "value": rule_txt, "tone": "green" if rule == "profit" else ("red" if rule else "")},
+        {"label": "Next (CT)", "value": ("due now" if div.get("next_due_now") else _ct_when(div.get("next_ct"))), "tone": ""},
+        {"label": "Pending", "value": _usd(pend.get("amount_usd")) if pend else "\u2014", "tone": ""},
+        {"label": "Net closed", "value": _usd(net, True) if net is not None else "\u2014", "tone": _tone(net)},
+        {"label": f"Min {min_txt}", "value": tg.get("text") or "\u2014", "tone": "green" if tg.get("beat") else ""},
+        {"label": "Free cash", "value": (f"{_usd(cc.get('free_usd'))} / {_usd(cc.get('needed_usd'))}" if cc else "\u2014"),
+         "tone": ("green" if cc.get("ok") else "red") if cc else ""},
+        {"label": "Carry", "value": _usd(div.get("carry_usd") or 0), "tone": ""},
+        {"label": "Paid total", "value": f"{int(tot.get('count') or 0)} \u00b7 {_usd(tot.get('usd') or 0)}", "tone": ""},
+        {"label": "Dividend BTC", "value": _btc(tot.get("btc") or 0), "tone": ""},
+        {"label": "Week / month", "value": f"{_usd(wk.get('usd') or 0)} / {_usd(mo.get('usd') or 0)}", "tone": ""},
+        {"label": "Treasury share", "value": (f"{float(share):.2f}%" if share is not None else "0.00%"), "tone": ""},
+    ]
+    unpaid = list(div.get("unpaid") or [])
+    cards.insert(1, {"label": "Unpaid", "value": (", ".join(x[5:] for x in unpaid[:3]) + (f" +{len(unpaid) - 3}" if len(unpaid) > 3 else ""))
+                     if unpaid else "none", "tone": "red" if unpaid else "green"})
+    if last:
+        cards += [
+            {"label": "Last (CT)", "value": _ct_when(last.get("at_ct")), "tone": ""},
+            {"label": "Last USD", "value": _usd(last.get("usd")), "tone": "green" if last.get("tag") == "green" else ("red" if last.get("tag") == "red" else "")},
+            {"label": "Last BTC", "value": _btc(last.get("btc")), "tone": ""},
+            {"label": "Fill price", "value": _usd(last.get("price")), "tone": ""},
+        ]
+    notes = []
+    if reason:
+        notes.append({"text": f"Today: {reason}", "tone": "red" if stone == "red" else ""})
+    if unpaid:
+        notes.append({"text": f"Unpaid dividend dates ({div.get('cutoff_label') or '3pm'} CT passed): " + ", ".join(unpaid[:6])
+                              + " \u2014 made up oldest first by treasury_dca.py --execute --catch-up", "tone": "red"})
+    if div.get("in_doubt_dates"):
+        notes.append({"text": "In doubt (never auto-retried): " + ", ".join(div["in_doubt_dates"][:6]), "tone": "red"})
+    for c in (div.get("caught_up") or [])[-3:]:
+        notes.append({"text": f"Caught up {c.get('ct_date')}: {_usd(c.get('usd'))} \u00b7 {_btc(c.get('btc'))} BTC @ "
+                              f"{_usd(c.get('price'))} \u00b7 paid {_ct_when(c.get('at_ct'))}", "tone": "green"})
+    if w.get("window_start"):
+        lanes = w.get("by_lane") or {}
+        lane_txt = " \u00b7 ".join(f"{k} {_usd(v, True)}" for k, v in lanes.items() if v)
+        notes.append({"text": f"Window {_ct_when(w.get('window_start'))} \u2192 {_ct_when(w.get('window_end'))} CT \u00b7 "
+                              f"{int(w.get('closes') or 0)} live closes" + (f" \u00b7 {lane_txt}" if lane_txt else "")
+                              + " \u00b7 unrealized not counted", "tone": ""})
+    if rule == "red_day_floor":
+        notes.append({"text": f"Red/flat day so far: the {floor_txt} floor comes out of free cash (skipped and logged if under {floor_txt}).", "tone": "red"})
+    elif rule == "profit":
+        notes.append({"text": "Green day so far: 100% of net closed profit goes to the treasury (capped at free cash).", "tone": "green"})
+    ps = div.get("pnl_sweep") or {}
+    notes.append({"text": "50% P/L sweep: retired \u2014 replaced by this dividend"
+                          + (f" ({int(ps.get('count') or 0)} legacy \u00b7 {_usd(ps.get('usd'))})" if ps.get("count") else ""),
+                  "tone": ""})
+    recent = []
+    for r in div.get("recent") or []:
+        tag = r.get("tag")
+        word = "GREEN" if tag == "green" else ("RED" if tag == "red" else "FLAT")
+        nc = r.get("net_closed_usd")
+        src = " \u00b7 from free cash" if r.get("kind") == "red_day_floor" else ""
+        recent.append({
+            "tag": word, "tone": "green" if tag == "green" else ("red" if tag == "red" else ""),
+            "text": f"{_ct_when(r.get('at_ct'))} \u00b7 {r.get('kind_label')} \u00b7 {_usd(r.get('usd'))} \u00b7 "
+                    f"{_btc(r.get('btc'))} BTC @ {_usd(r.get('price'))}"
+                    + (f" \u00b7 net {_usd(nc, True)}" if nc is not None else "")
+                    + (f" \u00b7 cleared {min_txt}" if r.get("beat_target") else "") + src
+                    + (f" \u00b7 catch-up for {r.get('ct_date')}" if r.get("catch_up") else ""),
+        })
+    _yc, _yn, _ys = ytd_cards(div.get("ytd"))
+    cards += _yc
+    notes += _yn
+    out["dividend"] = {
+        "label": "Daily Dividend \u2014 Robo Trader \u2192 Treasury",
+        "schedule": div.get("label") or "",
+        "rule_text": div.get("rule_text") or "",
+        "cards": cards,
+        "target": {"text": tg.get("text") or "", "bar": float(tg.get("bar") or 0),
+                   "beat": bool(tg.get("beat")), "pct": tg.get("pct"),
+                   "verdict": (f"cleared the {min_txt} minimum (+{_usd(tg.get('overage_usd') or 0)} overage)" if tg.get("beat") else f"below the {min_txt} minimum ({_usd(tg.get('short_usd'))} to go)")} if tg else None,
+        "notes": notes,
+        "recent": recent,
+        "ytd_series": _ys,
+        "topup_unlocked": bool((div.get("ytd") or {}).get("topup_unlocked")),
+        "empty": "" if recent else f"No dividends yet \u2014 the first one is {_ct_when(div.get('next_ct'))} CT.",
+    }
+    return out
+
+
+def dividend_block(payload: dict) -> dict | None:
+    """Dividend display block from the in-container dividend_status (never raises)."""
+    try:
+        sec = treasury_section({
+            "btc": 0, "cost_usd": 0, "contributions": 0, "btc_price": None,
+            "dividend": payload.get("dividend"),
+            "dividend_error": payload.get("dividend_error"),
+        })
+        return (sec or {}).get("dividend")
+    except Exception as exc:  # noqa: BLE001
+        return {"label": "Daily Dividend \u2014 Robo Trader \u2192 Treasury", "rule_text": "",
+                "cards": [], "target": None, "notes": [], "recent": [],
+                "empty": f"Dividend display error ({type(exc).__name__})"}
 
 
 def coinbase_status(base: str, user: str, container: str) -> dict:
@@ -1097,6 +1390,7 @@ def coinbase_status(base: str, user: str, container: str) -> dict:
 
     daily_pnl = round(futures_pnl, 2)
     out.update({
+        "dividend": dividend_block(payload),
         "detail": True,
         "source": "coinbase",
         "mode": flags["mode"],

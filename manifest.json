@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "tb.snowball",
   "name": "Omarchy Snowball Plugin",
-  "version": "1.3.5",
+  "version": "1.3.6",
   "author": "tb",
-  "description": "Snowball auto trader bar chip: Coinbase via SSH; Otter-style Robo Trader popup (warm orange cards, status chips, 26px hero) + Bitcoin treasury (v1.3.5).",
+  "description": "Snowball auto trader bar chip: Coinbase via SSH; Otter-style Robo Trader popup (warm orange cards, status chips, 26px hero) + Bitcoin treasury + Daily Dividend panel (Robo Trader \u2192 Treasury) (v1.3.6).",
   "kinds": [
     "bar-widget"
   ],

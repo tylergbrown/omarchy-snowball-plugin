@@ -121,9 +121,9 @@ BarWidget {
     ? Number(detail.daily_pnl_usd) : NaN
 
   function toneColor(tone) {
-    if (tone === "ok") return cOk
+    if (tone === "ok" || tone === "green") return cOk
     if (tone === "warn") return cWarn
-    if (tone === "bad") return cBad
+    if (tone === "bad" || tone === "red") return cBad
     if (tone === "accent") return cAccent
     return cFg
   }
@@ -603,6 +603,96 @@ BarWidget {
     return amount > 0 ? "#7dce82" : "#e07a7a"
   }
 
+
+  function chunkList(items, size) {
+    var chunks = []
+    var cur = []
+    var list = items || []
+    for (var i = 0; i < list.length; i++) {
+      cur.push(list[i])
+      if (cur.length >= size) {
+        chunks.push(cur)
+        cur = []
+      }
+    }
+    if (cur.length) chunks.push(cur)
+    return chunks
+  }
+
+  function dividendTone(tone) {
+    if (tone === "green") return "ok"
+    if (tone === "red") return "bad"
+    return tone || ""
+  }
+
+  function dividendCardsToMetrics(cards) {
+    var out = []
+    var list = cards || []
+    for (var i = 0; i < list.length; i++) {
+      var c = list[i]
+      if (!c || typeof c !== "object") continue
+      out.push(metric(String(c.label || ""), String(c.value !== undefined && c.value !== null ? c.value : "—"), dividendTone(c.tone)))
+    }
+    return out
+  }
+
+  function dividendSection(div) {
+    if (!div || typeof div !== "object") return null
+    var all = div.cards || []
+    var main = []
+    var ytd = []
+    for (var i = 0; i < all.length; i++) {
+      if (!all[i] || typeof all[i] !== "object") continue
+      if (all[i].group === "ytd") ytd.push(all[i])
+      else main.push(all[i])
+    }
+    var notes = []
+    var srcNotes = div.notes || []
+    for (var n = 0; n < srcNotes.length; n++) {
+      if (!srcNotes[n] || !srcNotes[n].text) continue
+      notes.push({ text: "· " + String(srcNotes[n].text), tone: dividendTone(srcNotes[n].tone) })
+    }
+    var recent = []
+    var srcRecent = div.recent || []
+    for (var r = 0; r < Math.min(8, srcRecent.length); r++) {
+      var row = srcRecent[r]
+      if (!row || typeof row !== "object") continue
+      recent.push({
+        tag: String(row.tag || ""),
+        text: String(row.text || ""),
+        tone: dividendTone(row.tone)
+      })
+    }
+    var series = []
+    var srcSeries = div.ytd_series || []
+    for (var s = 0; s < srcSeries.length; s++) {
+      if (!srcSeries[s] || typeof srcSeries[s] !== "object") continue
+      if (srcSeries[s].net_usd === undefined || srcSeries[s].net_usd === null) continue
+      series.push(srcSeries[s])
+    }
+    return {
+      kind: "dividend",
+      title: String(div.label || "Daily Dividend").toUpperCase(),
+      schedule: String(div.schedule || ""),
+      ruleText: String(div.rule_text || ""),
+      metrics: dividendCardsToMetrics(main),
+      metricRows: chunkList(dividendCardsToMetrics(main), 4),
+      ytdMetrics: dividendCardsToMetrics(ytd),
+      ytdMetricRows: chunkList(dividendCardsToMetrics(ytd), 4),
+      ytdLabel: "YTD AVERAGE DAILY PROFIT — BEAT IT EVERY DAY",
+      target: (div.target && typeof div.target === "object") ? div.target : null,
+      notes: notes,
+      recent: recent,
+      ytdSeries: series,
+      empty: String(div.empty || ""),
+      extra: [],
+      columns: [],
+      rows: [],
+      tableLabel: "",
+      more: ""
+    }
+  }
+
   function dashboardSections(payload) {
     var raw = payload && payload.books ? payload.books.slice(0) : []
     var indexed = []
@@ -680,8 +770,21 @@ BarWidget {
         columns: columns,
         rows: rows,
         tableLabel: (name === "coinbase" || name === "crypto") ? "OPEN LOTS" : "HOLDINGS",
-        more: (limit >= 0 && held.length > limit) ? ("… " + (held.length - limit) + " more not shown") : ""
+        more: (limit >= 0 && held.length > limit) ? ("… " + (held.length - limit) + " more not shown") : "",
+        bookName: name
       })
+      if (name === "treasury") {
+        var divAfterTreasury = dividendSection(payload && payload.dividend)
+        if (divAfterTreasury) out.push(divAfterTreasury)
+      }
+    }
+    var hasDiv = false
+    for (var d = 0; d < out.length; d++) {
+      if (out[d] && out[d].kind === "dividend") { hasDiv = true; break }
+    }
+    if (!hasDiv) {
+      var divFallback = dividendSection(payload && payload.dividend)
+      if (divFallback) out.push(divFallback)
     }
     return out
   }
@@ -1395,13 +1498,14 @@ BarWidget {
               }
             }
 
-            // Per-book cards
+            // Per-book cards (+ Daily Dividend after Treasury)
             Repeater {
               model: root.sections
               delegate: OtterCard {
                 id: bookCard
                 required property var modelData
                 readonly property var sec: modelData
+                readonly property bool isDiv: sec && sec.kind === "dividend"
                 stripe: root.cBorder
                 wash: "#1C120C"
                 washStop: 0.30
@@ -1414,17 +1518,208 @@ BarWidget {
                   font.letterSpacing: 0.6
                 }
 
-                MetricRow {
-                  items: bookCard.sec.metrics
-                }
-
-                MetricRow {
-                  visible: bookCard.sec.extra.length > 0
-                  items: bookCard.sec.extra
+                OtterText {
+                  visible: bookCard.isDiv && bookCard.sec.schedule && bookCard.sec.schedule.length > 0
+                  width: parent.width
+                  text: bookCard.sec.schedule || ""
+                  color: root.cMuted
+                  font.pixelSize: 10
+                  wrapMode: Text.WordWrap
                 }
 
                 OtterText {
-                  visible: bookCard.sec.rows.length > 0
+                  visible: bookCard.isDiv && bookCard.sec.ruleText && bookCard.sec.ruleText.length > 0
+                  width: parent.width
+                  text: bookCard.sec.ruleText || ""
+                  color: root.cMuted
+                  font.pixelSize: 10
+                  wrapMode: Text.WordWrap
+                }
+
+                // Book metrics (non-dividend)
+                MetricRow {
+                  visible: !bookCard.isDiv
+                  items: bookCard.sec.metrics || []
+                }
+
+                MetricRow {
+                  visible: !bookCard.isDiv && bookCard.sec.extra && bookCard.sec.extra.length > 0
+                  items: bookCard.sec.extra || []
+                }
+
+                // Dividend metric grids (4-up rows)
+                Column {
+                  visible: bookCard.isDiv
+                  width: parent.width
+                  spacing: 8
+                  Repeater {
+                    model: bookCard.sec.metricRows || []
+                    delegate: MetricRow {
+                      required property var modelData
+                      width: parent.width
+                      items: modelData
+                    }
+                  }
+                }
+
+                OtterText {
+                  visible: bookCard.isDiv && bookCard.sec.ytdMetrics && bookCard.sec.ytdMetrics.length > 0
+                  text: bookCard.sec.ytdLabel || "YTD AVERAGE DAILY PROFIT — BEAT IT EVERY DAY"
+                  color: root.cMuted
+                  font.pixelSize: 10
+                  font.letterSpacing: 0.3
+                }
+
+                Column {
+                  visible: bookCard.isDiv && bookCard.sec.ytdMetrics && bookCard.sec.ytdMetrics.length > 0
+                  width: parent.width
+                  spacing: 8
+                  Repeater {
+                    model: bookCard.sec.ytdMetricRows || []
+                    delegate: MetricRow {
+                      required property var modelData
+                      width: parent.width
+                      items: modelData
+                    }
+                  }
+                }
+
+                // YTD bars vs rolling average (display only)
+                Canvas {
+                  id: ytdCanvas
+                  visible: bookCard.isDiv && bookCard.sec.ytdSeries && bookCard.sec.ytdSeries.length > 0
+                  width: parent.width
+                  height: 70
+                  readonly property int seriesLen: bookCard.sec.ytdSeries ? bookCard.sec.ytdSeries.length : 0
+                  onSeriesLenChanged: requestPaint()
+                  onWidthChanged: if (visible) requestPaint()
+                  onPaint: {
+                    var ctx = getContext("2d")
+                    var pts = (bookCard.sec.ytdSeries || []).slice(-30)
+                    ctx.clearRect(0, 0, width, height)
+                    if (!pts.length) return
+                    var vals = []
+                    for (var i = 0; i < pts.length; i++) {
+                      vals.push(Number(pts[i].net_usd) || 0)
+                      vals.push(Number(pts[i].avg_usd) || 0)
+                    }
+                    vals.push(0)
+                    var hi = Math.max.apply(null, vals)
+                    var lo = Math.min.apply(null, vals)
+                    if (hi - lo < 1e-9) hi = lo + 1
+                    function y(v) { return 4 + (hi - v) / (hi - lo) * (height - 8) }
+                    var step = width / Math.max(1, pts.length)
+                    var bw = Math.max(2, step * 0.6)
+                    ctx.strokeStyle = "#B9A79A80"
+                    ctx.lineWidth = 1
+                    ctx.beginPath()
+                    ctx.moveTo(0, y(0))
+                    ctx.lineTo(width, y(0))
+                    ctx.stroke()
+                    for (var j = 0; j < pts.length; j++) {
+                      var v = Number(pts[j].net_usd) || 0
+                      ctx.fillStyle = pts[j].beat ? "#4ADE80" : (v < 0 ? "#FF6B6B" : "#B9A79A")
+                      var top = v >= 0 ? y(v) : y(0)
+                      var bot = v >= 0 ? y(0) : y(v)
+                      ctx.fillRect(j * step + (step - bw) / 2, top, bw, Math.max(bot - top, 1))
+                    }
+                    ctx.strokeStyle = "#FF8A1F"
+                    ctx.lineWidth = 1.5
+                    ctx.beginPath()
+                    for (var k = 0; k < pts.length; k++) {
+                      var ax = k * step + step / 2
+                      var ay = y(Number(pts[k].avg_usd) || 0)
+                      if (k === 0) ctx.moveTo(ax, ay)
+                      else ctx.lineTo(ax, ay)
+                    }
+                    ctx.stroke()
+                  }
+                  onVisibleChanged: if (visible) requestPaint()
+                  Component.onCompleted: requestPaint()
+                }
+
+                // Target progress
+                Row {
+                  visible: bookCard.isDiv && bookCard.sec.target && bookCard.sec.target.text
+                  width: parent.width
+                  spacing: 8
+                  Rectangle {
+                    id: trough
+                    width: Math.max(40, parent.width - verdictLab.implicitWidth - 8)
+                    height: 8
+                    radius: 4
+                    color: "#211813"
+                    anchors.verticalCenter: parent.verticalCenter
+                    Rectangle {
+                      width: parent.width * Math.max(0, Math.min(1, Number((bookCard.sec.target && bookCard.sec.target.bar) || 0)))
+                      height: parent.height
+                      radius: 4
+                      color: (bookCard.sec.target && bookCard.sec.target.beat) ? root.cOk : root.cAccent
+                    }
+                  }
+                  OtterText {
+                    id: verdictLab
+                    text: ((bookCard.sec.target && bookCard.sec.target.text) || "") + " · " + ((bookCard.sec.target && bookCard.sec.target.verdict) || "")
+                    color: (bookCard.sec.target && bookCard.sec.target.beat) ? root.cOk : root.cMuted
+                    font.pixelSize: 10
+                    elide: Text.ElideRight
+                  }
+                }
+
+                Repeater {
+                  model: bookCard.isDiv ? (bookCard.sec.notes || []) : []
+                  delegate: OtterText {
+                    required property var modelData
+                    width: bookCard.width - 30
+                    text: modelData.text || ""
+                    color: root.toneColor(modelData.tone || "")
+                    font.pixelSize: 10
+                    wrapMode: Text.WordWrap
+                  }
+                }
+
+                OtterText {
+                  visible: bookCard.isDiv && bookCard.sec.recent && bookCard.sec.recent.length > 0
+                  text: "RECENT DIVIDENDS"
+                  color: root.cMuted
+                  font.pixelSize: 10
+                  font.letterSpacing: 0.3
+                }
+
+                Repeater {
+                  model: bookCard.isDiv ? (bookCard.sec.recent || []) : []
+                  delegate: Row {
+                    required property var modelData
+                    width: bookCard.width - 30
+                    spacing: 8
+                    OtterText {
+                      width: 52
+                      text: modelData.tag || ""
+                      color: root.toneColor(modelData.tone || "")
+                      font.pixelSize: 10
+                      font.bold: true
+                    }
+                    OtterText {
+                      width: parent.width - 60
+                      text: modelData.text || ""
+                      color: root.cFg
+                      font.pixelSize: 10
+                      wrapMode: Text.WordWrap
+                    }
+                  }
+                }
+
+                OtterText {
+                  visible: bookCard.isDiv && (!bookCard.sec.recent || bookCard.sec.recent.length === 0) && bookCard.sec.empty && bookCard.sec.empty.length > 0
+                  width: parent.width
+                  text: bookCard.sec.empty || ""
+                  color: root.cMuted
+                  font.pixelSize: 10
+                  wrapMode: Text.WordWrap
+                }
+
+                OtterText {
+                  visible: !bookCard.isDiv && bookCard.sec.rows && bookCard.sec.rows.length > 0
                   text: bookCard.sec.tableLabel
                   color: root.cMuted
                   font.pixelSize: 10
@@ -1432,14 +1727,14 @@ BarWidget {
 
                 Column {
                   id: table
-                  visible: bookCard.sec.rows.length > 0
+                  visible: !bookCard.isDiv && bookCard.sec.rows && bookCard.sec.rows.length > 0
                   width: parent.width
                   spacing: 3
 
                   Row {
                     spacing: 10
                     Repeater {
-                      model: bookCard.sec.columns
+                      model: bookCard.sec.columns || []
                       delegate: OtterText {
                         required property var modelData
                         required property int index
@@ -1456,7 +1751,7 @@ BarWidget {
                   }
 
                   Repeater {
-                    model: bookCard.sec.rows
+                    model: bookCard.sec.rows || []
                     delegate: Row {
                       id: posRow
                       required property var modelData
@@ -1480,7 +1775,7 @@ BarWidget {
                 }
 
                 OtterText {
-                  visible: bookCard.sec.more.length > 0
+                  visible: !bookCard.isDiv && bookCard.sec.more && bookCard.sec.more.length > 0
                   text: bookCard.sec.more
                   color: root.cMuted
                   font.pixelSize: 10
